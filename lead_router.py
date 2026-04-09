@@ -5,6 +5,7 @@ from flask import Flask,request,jsonify
 SMS_AGENT_URL=os.environ.get('SMS_AGENT_URL','')
 EMAIL_AGENT_URL=os.environ.get('EMAIL_AGENT_URL','')
 FB_VERIFY_TOKEN=os.environ.get('FB_VERIFY_TOKEN','wwh_fb_2024')
+REDFIN_API_KEY=os.environ.get('REDFIN_API_KEY','')
 
 logging.basicConfig(level=logging.INFO)
 logger=logging.getLogger(__name__)
@@ -75,6 +76,24 @@ def normalize(source,raw):
                      'area':raw.get('city',raw.get('area','')),
                      'notes':'REDX '+lt.upper()+' | '+raw.get('address',''),
                      'timeline':'ASAP' if lt=='expired' else '','intent':'seller'})
+    elif source=='redfin':
+        # Redfin Partner API / lead form webhook
+        # Supports both Redfin Partner Central and third-party webhook formats
+        contact=raw.get('contact',raw.get('buyer',raw))
+        nm=contact.get('name',raw.get('name',''))
+        pts=nm.strip().split(' ',1) if nm else ['','']
+        listing=raw.get('listing',raw.get('property',{}))
+        price=listing.get('price',raw.get('price',''))
+        price_str=('$'+str(int(price):,) if str(price).isdigit() else str(price)) if price else ''
+        area=listing.get('city',listing.get('neighborhood',
+             raw.get('city',raw.get('market','Nashville'))))
+        lead.update({'first_name':contact.get('firstName',contact.get('first_name',pts[0] if pts else '')),
+                     'last_name':contact.get('lastName',contact.get('last_name',pts[1] if len(pts)>1 else '')),
+                     'email':contact.get('email',raw.get('email','')),
+                     'phone':contact.get('phone',contact.get('phoneNumber',raw.get('phone',''))),
+                     'area':area,'price_range':price_str,
+                     'notes':raw.get('message',raw.get('comment','Redfin inquiry')),
+                     'intent':'buyer'})
     elif source=='manual':
         lead.update({'first_name':raw.get('first_name',''),'last_name':raw.get('last_name',''),
                      'email':raw.get('email',''),'phone':raw.get('phone',''),
@@ -140,6 +159,18 @@ def redx():
     leads=data.get('leads',[data])
     return jsonify({'processed':len(leads),'results':[route('redx',l) for l in leads]})
 
+@app.route('/webhook/redfin',methods=['POST'])
+def redfin():
+    # Redfin sends buyer inquiries from listing pages and partner referrals
+    # Supports: Redfin Partner Central webhooks and direct contact form integrations
+    data=request.get_json(silent=True) or {}
+    if not data: return jsonify({'error':'No data'}),400
+    # Handle batch or single lead
+    leads=data.get('leads',data.get('contacts',[data]))
+    if isinstance(leads,dict): leads=[leads]
+    results=[route('redfin',l) for l in leads]
+    return jsonify({'processed':len(results),'results':results})
+
 @app.route('/leads/add',methods=['POST'])
 def add_lead():
     data=request.get_json(silent=True) or {}
@@ -158,7 +189,7 @@ def bulk():
 @app.route('/health')
 def health():
     return jsonify({'status':'live','agent':'WWH Lead Router',
-                   'sources':['zillow','facebook','redx','manual'],
+                   'sources':['zillow','facebook','redx','redfin','manual'],
                    'sms_agent':SMS_AGENT_URL or 'dry_run',
                    'email_agent':EMAIL_AGENT_URL or 'dry_run',
                    'leads_seen':len(seen_leads)})
